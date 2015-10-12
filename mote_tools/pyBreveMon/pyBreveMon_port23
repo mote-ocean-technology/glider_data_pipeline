@@ -1,0 +1,209 @@
+#!/usr/bin/env python
+#
+#Name:      py_brevemon.py
+#Author:    rdc@mote.org
+#Version:   2
+#Date:      24 July 2014
+#
+#Note:
+"""
+Completely rewrote code. Adding JSON caused enough problems
+that it was time to fix all the crap left over from the 
+original perl conversion. We no longer check for number of
+fields... we assume a good status line if it starts with ***SN
+and if for some reason we got a garbaged one it will be in the log
+and we can correct later. This way multiple species will NOT cause
+the code to bork. As long as SI_DINOKARB doesn't change position we
+can parse.
+
+JSON_Status will be stored to a MongoDB collection. We need to pull
+site and deployed  from socool.sites, then write to the MongoDB collection.
+So we won't be able to drop MySQL altogether as it makes no sense to put
+the site info in Mongo. We will also continue to write to socool.opd_data
+so that all the main web code doesn't need to be rewritten any time soon.
+
+Finally, we moved pyBreveMon into the mote_tools directory so we could
+use git for version control.
+
+2014-07-28
+Changed from MongoDB back to MySQL for logs. Will probably change back
+for status line also. Will create new tables called opd_species_data and
+make fixed schema w/id, epoch, serial and corr1-12. This way we can still
+write to opd_data which means no reprogramming of graphing code, but we'll
+be logging all species. We will add another 'Data Portal' entry so that
+species reports can be viewed... eventually this will be replaced
+by a full query interface.
+
+"""
+
+
+from twisted.internet import reactor
+from twisted.internet.protocol import Factory
+from twisted.protocols.basic import LineReceiver
+import sys
+import re
+import time as time
+import MySQLdb
+import logging
+import json
+myDebug = 0
+
+class breveLogger(LineReceiver):
+    """
+    Module:     breveLogger
+    Date:       2012-11-27
+    Author:     rdc@mote.org
+    Modified:   2013-04-24
+    By:         rdc@mote.org
+    Inputs:     
+    Outputs:    
+    Purpose:    
+    """
+    listenPort = 23
+    logFile = "/var/log/pyBreveMon_23.log"
+    coolHost = "localhost"
+    coolTable = "opd_data"
+    coolUser = "breve"
+    coolPass = "buster"
+    coolDB = "socool"
+
+
+    logging.basicConfig(level=logging.INFO, filename=logFile, \
+format="%(asctime)s %(levelname)s %(message)s")
+    pattBusterStatus = re.compile(r'^\*\*\*[0-9]+')
+    pattJSONStatus = re.compile(r'^JSON_Status:+')
+    dataElements = 14
+    dataElements2 = 16
+    logging.info('pyBreveMon_v3 ready for incoming connections on port %d', \
+listenPort)
+ 
+    def connectionMade(self):
+        logging.warn('Accepted incoming connection from %s', \
+self.transport.client)
+
+    def connectionLost(self, reason):
+        logging.warn('Closed connection from %s', self.transport.client)
+
+    def lineReceived(self, line):
+         socool_db = MySQLdb.connect(host=self.coolHost,
+user=self.coolUser, passwd=self.coolPass,db=self.coolDB)
+         cool_cursor = socool_db.cursor()
+
+         epoch = int(time.time())
+         insertQuery = "insert into opd_logs VALUES(default,'%s','%s')" \
+% (epoch, line)
+         cool_cursor.execute(insertQuery)
+         socool_db.commit()
+         #write to log file
+         logging.info(line)
+
+         if self.pattBusterStatus.match(line):
+            myStatus = line.split(',')
+            serialNumber = (myStatus[0])
+            serialNumber = int(serialNumber.replace('***', ''))
+            voltage = float(myStatus[1])
+            bypassPress = float(myStatus[2])
+            status = int(myStatus[3])
+            integrationTime = int(myStatus[4])
+            cdomRef = int(myStatus[5])
+            myDate = time.strftime('%Y-%m-%d', time.localtime())
+            myTime = time.strftime('%H:%M:%S', time.localtime())
+            myDateTime = myDate + "T" + myTime
+            #latLon = myStatus[8].split('/')
+            #myLat = float(latLon[0])
+            #myLon = float(latLon[1])
+            #myLat, myLon = dinkum_convert(myLat, myLon)
+            myLat = 0.0
+            myLon = 0.0
+            a440 = float(myStatus[9])
+            S = float(myStatus[10])
+            blank = float(myStatus[11])
+            si_reading = float(myStatus[12])
+            si_model = myStatus[13]
+
+            if myDebug > 0:
+                print "serialNumber: %d" % serialNumber
+                print "voltage: %0.4f" % voltage
+                print "bypassPress: %0.4f" % bypassPress
+                print "status: %d" % status
+                print "integrationTime: %d" % integrationTime
+                print "cdomRef: %d" % cdomRef
+                print "date: %s" % myDate
+                print "time: %s" % myTime
+                print "dateTime: %s" % myDateTime
+                print "lon/lat: %0.4f %0.4f" % (myLon, myLat)
+                print "a440: %0.4f" % a440
+                print "S: %0.4f" % S
+                print "blank: %0.4f" % blank
+                print "si_reading: %0.4f" % si_reading
+                print "si_model: %s" % si_model
+            
+            #Need to query sites and get site
+            #Need to extract model 
+            siteQuery = 'SELECT site FROM sites where serial = %d'\
+ % (serialNumber)
+            result = cool_cursor.execute(siteQuery)
+            if (result == 1):
+                for(site) in cool_cursor:
+                    site = "%s" % site
+                    logging.info('Query for serial %d returned %s', \
+serialNumber,site)
+            else:
+                logging.warn('Query for serial %d did not return a site', \
+serialNumber)
+                site = "NULL"
+
+            myInsertQuery = "insert into opd_data values('%d','%0.4f','%0.4f',\
+'%d','%d','%d','%s','%0.4f','%0.4f','%0.4f','%0.4f','%d','%0.2f','%s','%s')" \
+% (serialNumber, voltage, bypassPress, status, integrationTime, cdomRef, \
+myDateTime, myLon, myLat, a440, S, blank, si_reading, si_model, site)
+            if myDebug > 0:
+                print "myInsertQuery: %s" % myInsertQuery
+
+            result = cool_cursor.execute(myInsertQuery)
+            if (result == 1):
+                logging.info('Insert to table %s on server %s succeeded', \
+self.coolTable,self.coolHost)
+                socool_db.commit()
+            else:
+                logging.error('Insert failed to table %s on server %s!', \
+self.coolTable,self.coolHost)
+    
+
+def dinkum_convert(dinkum_lat, dinkum_lon):
+    """
+    Module:     dinkum_convert
+    Date:       2012-11-27
+    Author:     rdc@mote.org
+    Modified:   2014-10-03
+    By:         rdc@mote.org
+    Inputs:     dinkum_lat,dinkum_lon in dinkum format
+    Outputs:    dd.dddd format
+    Purpose:    conversion of lat long formatting
+    """
+
+    lat_int = (dinkum_lat / 100.0)
+    lon_int = (dinkum_lon / 100.0)
+    lat = (lat_int + (dinkum_lat - (lat_int * 100)) / 60.0)
+    lon = (lon_int + (dinkum_lon - (lon_int * 100)) / 60.0)
+    return lat, lon
+
+def main():
+    """
+    Module:     main
+    Date:       2012-11-27
+    Author:     rdc@mote.org
+    Modified:   2013-04-24
+    By:         rdc@mote.org
+    Inputs:     none
+    Outputs:    none
+    Purpose:    Main loop
+    """
+    
+    factory = Factory()
+    factory.protocol = breveLogger
+    reactor.listenTCP(breveLogger.listenPort, factory)
+    reactor.run()
+
+main()
+

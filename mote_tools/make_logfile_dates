@@ -1,0 +1,10 @@
+#!/bin/bash
+#Sets date on logfile to be equal to logfile datestring in name
+
+for file in *.log;
+do
+    FILENAME=${file%.*}
+    DATESTRING=`echo $FILENAME | cut -f3 -d "_" | cut -d"T" -f1`;
+    touch -d $DATESTRING $file
+done
+

@@ -1,0 +1,231 @@
+#!/usr/bin/env python
+"""
+Name:       mote_standard.py
+Author:     rdc@mote.org
+Date:       08 May, 2013
+Revised:    27 Feb, 2014
+
+Purpose:    Reads mote-standard.dba and creates sqlite database file
+            for all sensors in the mote-standard.dba header. Sensor
+            values are inserted into db file.  Queries are then run
+            to generate mission summary: MAX/MIN water temp, conductivity,
+            battery voltage, sci_moteopd_corrN, mission start date,
+            mission end date, days in water. Summary file is written
+            out as mote-summary.txt.
+
+            Note: We are using transactional commits here. The initial tests
+            showed a massive degradation in performance with line-by-line
+            commits. Execution time was 1 hour and 14 minutes. We switched
+            to transactional commits and the run time is now 30 seconds.
+
+            Update: added code so that we can now process raw merged files
+            without having to edit headers. This allows us to save
+            original header format so other users can process w/TRW tools.
+
+            Switched in 'in-memory' database as we don't need to keep .db file.
+            createDB() returns cur which is passed to genSummary()
+            
+            Update: Went back to file database as had forgotten make_mote_plots
+            used this file to generate plots! D'oh...
+
+            PyLint score: 9.16 out of 10.0
+"""
+import sys
+from sqlite3 import dbapi2 as sqlite
+from datetime import datetime
+myDebug = 1
+
+def createDB(vehicle_name, mission_date):
+    """
+    Name:       createDB()
+    Author:     rdc@mote.org
+    Date:       08 May, 2013
+    Updated:    09 May, 2013
+    Purpose:    Creates sqlite3 db file
+    Inputs:     None
+    Outputs:    sqlite3 dbfile
+    """
+    print "Creating database file..."
+    dbFile = "%s-%s-sqlite.db" % (vehicle_name, mission_date)
+    moteStandard = sqlite.connect(dbFile, isolation_level=None)
+    moteCur = moteStandard.cursor()
+    moteCur.execute('begin')
+    #open mote-standard.dba and read headers
+    try:
+        dbaFile = "%s-%s-merged.dba" % (vehicle_name, mission_date)
+        moteStandard = open(dbaFile,'r')
+    except IOError as e:
+        print "IOError: %s" % e
+        sys.exit()
+
+    #skip lines until 'segment_filename'
+    dataLine = moteStandard.readline()
+    while not "segment_filename" in dataLine:
+        dataLine = moteStandard.readline()
+    #read until we get past segment_filename: these will be our sensors
+    while "segment_filename" in dataLine:
+        dataLine = moteStandard.readline()
+
+    sensorList = dataLine.rstrip()
+    sensorList = sensorList.split(' ')
+    sensorListLen = len(sensorList)
+
+    sensorNum = 1
+    sensorString = ""
+    for sensor in sensorList:
+        if sensorNum < sensorListLen:
+            sensorString = sensorString+'%s double, ' % sensor
+        else:
+            sensorString = sensorString+'%s double' % sensor
+        sensorNum += 1
+
+    myQueryString = 'create table moteSensors (id integer primary key, %s)'\
+% (sensorString)
+    moteCur.execute(myQueryString)
+    moteCur.execute('commit')
+
+
+    print "Creating indexes..."
+    myQueryString = 'create index myIndex on moteSensors \
+(id,m_present_time,m_depth,m_water_depth)'
+    moteCur.execute(myQueryString)
+
+    print "Inserting sensor readings..."
+    #Now grub sensor readings and insert
+    #skip past sensor type line
+    moteStandard.readline()
+    moteStandard.readline()
+
+    moteCur.execute('begin')
+    lineNum = 0
+    for line in moteStandard:
+
+        readings = line.rstrip()
+        #add commas
+        readings = readings.replace(' ',',')
+
+        #put quotes around NaN
+        readings = readings.replace('NaN',"'NaN'")
+        readings = readings.replace('nan',"'NaN'")
+        insertQuery = 'insert into moteSensors VALUES(%d,%s)'\
+% (lineNum,readings)
+
+        moteCur.execute(insertQuery)
+        lineNum += 1
+    moteCur.execute('commit')
+    #clean shit up
+    print "Removing outliers..."
+    moteCur.execute("delete from moteSensors where sci_water_temp <= 0.0")
+    moteCur.execute("delete from moteSensors where m_water_depth <= 0.0")
+    moteCur.execute("delete from moteSensors where m_water_depth like '%e%'")
+    moteCur.execute("delete from moteSensors where m_depth < 0.0")
+    moteCur.execute("delete from moteSensors where m_depth like '%e%'")
+    moteCur.execute("delete from moteSensors where sci_water_cond <= 0.0")
+    moteCur.execute("delete from moteSensors where sci_water_cond like '%e%'")
+    moteCur.execute("delete from moteSensors where sci_water_pressure <= 0.0")
+    moteCur.execute("delete from moteSensors where \
+sci_water_pressure like '%e%'")
+    moteCur.close()
+
+
+def genSummary(vehicle_name, mission_date):
+    """
+    Name:       genSummary()
+    Author:     rdc@mote.org
+    Date:       09 May, 2013
+    Updated:    09 May, 2013
+    Purpose:    Summarizes max/mins, days wet
+    Inputs:     None
+    Outputs:    mote-summary.txt file
+    """
+    #removed sci_moteopd_volt for use with usf-bass
+    maxMinList = ['m_battery', 'sci_water_temp', 'sci_water_cond', \
+'m_depth', 'm_water_depth']
+    try:
+        summaryFile = "%s-%s-summary.txt" % (vehicle_name, mission_date)
+        moteSummary = open(summaryFile,'w')
+    except IOError as e:
+        print "IOError: %s" % e
+        sys.exit()
+
+    dbaFile = "%s-%s-sqlite.db" % (vehicle_name, mission_date)
+    moteStandard = sqlite.connect(dbaFile, isolation_level=None)
+    moteCur = moteStandard.cursor()
+
+    #deploy start/end query
+    deployStartQuery = "select datetime(min(m_present_time),'unixepoch',\
+'localtime') from moteSensors where m_present_time != 'NaN'"
+    deployStart = moteCur.execute(deployStartQuery)
+    for deployStart in deployStart:
+        deployStartDate = deployStart[0]
+        deployStart = "Deplyment started: " + str(deployStart[0]) + '\n'
+        moteSummary.write(deployStart)
+
+    deployEndQuery = "select datetime(max(m_present_time),'unixepoch',\
+'localtime') from moteSensors where m_present_time != 'NaN'"
+    deployEnd = moteCur.execute(deployEndQuery)
+    for deployEnd in deployEnd:
+        deployEndDate = deployEnd[0]
+        deployEnd = "Deplyment ended: " + str(deployEnd[0]) + '\n'
+        moteSummary.write(deployEnd)
+
+    date_format = "%Y-%m-%d %H:%M:%S"
+    startDate = datetime.strptime(deployStartDate, date_format)
+    endDate = datetime.strptime(deployEndDate, date_format)
+    numDaysWet = endDate - startDate
+    daysWet = "Days wet: %s\n" % (numDaysWet)
+    moteSummary.write(daysWet)
+
+    #Distance travelled query
+    maxDistQuery = "select max(m_tot_horz_dist) from \
+moteSensors where m_tot_horz_dist != 'NaN'"
+    minDistQuery = "select min(m_tot_horz_dist) from \
+moteSensors where m_tot_horz_dist != 'NaN'"
+
+    minDist = moteCur.execute(minDistQuery)
+    for minDist in minDist:
+        minDist = float(minDist[0])
+
+    maxDist = moteCur.execute(maxDistQuery)
+    for maxDist in maxDist:
+        maxDist = float(maxDist[0])
+    distTravel = maxDist - minDist
+    distTravel = "Distance traveled: %0.2f km\n" % distTravel
+    moteSummary.write(distTravel)
+
+    #Max/Min queries
+    for sensor in maxMinList:
+        maxQuery = "select max(%s) from moteSensors where \
+%s != 'NaN' AND %s!= 0.0" % (sensor, sensor, sensor)
+        maxV = moteCur.execute(maxQuery)
+        for maxV in maxV:
+            moteSummary.write("Max %s: %s\n" % (sensor, maxV[0]))
+        minQuery = "select min(%s) from moteSensors where \
+%s != 'NaN' AND %s!= 0.0" % (sensor, sensor, sensor)
+        minV = moteCur.execute(minQuery)
+        for minV in minV:
+            moteSummary.write( "Min %s: %s\n" % (sensor, minV[0]))
+
+def main():
+    """
+    Name:       main()
+    Author:     rdc@mote.org
+    Date:       08 May, 2013
+    Purpose:    executes app
+
+    if (os.path.isfile('./mote-standard.db')):
+        #mote-standard.db exists so report and exit...
+        print "mote-standard.db already exists. Please delete first!"
+        sys.exit()
+    """
+    if len(sys.argv) != 3:
+        print "Usage: make_mote_summary vehicle_name mission_date"
+        sys.exit(1)
+    else:
+        vehicle_name = sys.argv[1]
+        mission_date = sys.argv[2]
+        createDB(vehicle_name, mission_date)
+        genSummary(vehicle_name, mission_date)
+
+main()
+

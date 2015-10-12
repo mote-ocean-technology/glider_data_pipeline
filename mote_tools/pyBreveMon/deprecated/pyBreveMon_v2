@@ -1,0 +1,212 @@
+#!/usr/bin/env python
+#
+#Name:      py_brevemon.py
+#Author:    rdc@mote.org
+#Version:   1.01a
+#Date:      17 October 2007
+#
+#Note:
+# Need to tweak date and time. Use localtime not
+# recvd bb time as time on bb not always set properly.
+# We don't really care what time the bb thinks it is, we
+# care what time we got the data
+#
+# Need to do the query to get site value. Right now I'm
+# Stuffing by hand. 
+#
+#25 October 2007 rdc@mote.org
+#   Got site query working
+#
+#
+#28 April 2008 rdc@mote.org
+#added dataElements2 and < > checking  since we need to
+#handle more than one model now
+#
+"""
+2013-03-25
+Modified to work with table brevebuster. Had to add dinkumConvert()
+and change time/date format. This isn't super clean or fancy
+but it does the job and is much easier to read than the old
+perl code. At some point I will clean this up and get a
+decent lint score.  Bottom line is that we are logging 
+good data to the brevebuster table on coolcomms.
+
+We are still using ActivePython-2.5 because I don't have
+Twisted libraries for 2.7 installed...
+
+2014-06-01
+Created v2 so we now write to both brevebuster and opd_data. 
+opd_data is the primary for the new SO COOL web site. brevebuster
+isn't used, but we will continue to write to it as a tertiary backup.
+
+
+"""
+from twisted.internet import reactor
+from twisted.internet.protocol import Factory
+from twisted.protocols.basic import LineReceiver
+import sys
+import re
+import time 
+import MySQLdb
+import logging
+myDebug = 0
+
+class breveLogger(LineReceiver):
+    """
+    Module:     breveLogger
+    Date:       2012-11-27
+    Author:     rdc@mote.org
+    Modified:   2013-04-24
+    By:         rdc@mote.org
+    Inputs:     
+    Outputs:    
+    Purpose:    
+    """
+    listenPort = 4001
+    logFile = "/var/log/pyBreveMon.log"
+    coolHost = "localhost"
+    coolTable = "opd_data"
+    coolUser = "breve"
+    coolPass = "buster"
+    coolDB = "socool"
+
+
+
+    logging.basicConfig(level=logging.INFO, filename=logFile, \
+format="%(asctime)s %(levelname)s %(message)s")
+    pattBusterStatus = re.compile(r'^\*\*\*[0-9]+')
+    dataElements = 14
+    dataElements2 = 16
+    logging.info('pyBreveMon ready for incoming connections on port %d', \
+listenPort)
+ 
+    def connectionMade(self):
+        logging.warn('Accepted incoming connection from %s', \
+self.transport.client)
+
+    def connectionLost(self, reason):
+        logging.warn('Closed connection from %s', self.transport.client)
+
+    def lineReceived(self, line):
+        #check for brevebuster status line formatting
+        if self.pattBusterStatus.match(line):
+            myStatus = line.split(',')
+            if (len(myStatus) < self.dataElements):
+                logging.error('Invalid <STATUS> line! Received %d fields')\
+                 % len(myStatus)
+                logging.error('<BAD STATUS>: %s', line)
+            elif (len(myStatus) > self.dataElements2):
+                logging.error('Invalid <STATUS> line! Received %d fields')\
+                 % len(myStatus)
+                logging.error('<BAD STATUS>: %s', line)
+            else:
+                logging.info('%s', line)
+                #do the DB connect here
+                socool_db = MySQLdb.connect(host=self.coolHost, 
+user=self.coolUser, passwd=self.coolPass,db=self.coolDB)
+                cool_cursor = socool_db.cursor()
+                #remove the leading ***
+                line = line.replace('***', '')
+                line = line.strip(',') 
+                line = line.split(',')
+                #need to make the date format mySql style and also set
+                #to localtime. BB clocks are sometimes off and we don't
+                #care so much what time the BB thinks it is as much as 
+                #when the data arrives
+                myDate = time.strftime('%Y-%m-%d', time.localtime())
+                myTime = time.strftime('%H:%M:%S', time.localtime())
+                mySerial = int(line[0].strip())
+                line[6] = myDate + 'T' + myTime
+                myPos = line[8].split('/')
+                myLat = float(myPos[0])
+                myLon = float(myPos[1])
+                myLat, myLon = dinkumConvert(myLat, myLon)
+                line[7] = str(myLat)
+                line[8] = str(myLon)
+
+                insertString = ""
+                count = 1 
+                for item in line:
+                    if (count < len(line)):
+                        insertString = insertString + "'"  + \
+item.strip() + "',"  
+                    else:
+                        insertString = insertString + "'"  + \
+item.strip() + "'"  
+                    count += 1
+               
+                #get the site
+                siteQuery = 'SELECT site FROM sites where serial = %d'\
+ % (mySerial)
+                result = cool_cursor.execute(siteQuery)
+                if (result == 1):
+                    for(site) in cool_cursor:
+                        site = "%s" % site
+                        logging.info('Query for serial %d returned %s', \
+ mySerial,site)
+                else:
+                    logging.warn('Query for serial %d did not return a site', \
+ mySerial)
+                    site = "NULL"
+
+                insertQuery = 'INSERT INTO opd_data VALUES (%s,\'%s\')'\
+ % (insertString,site)
+                result = cool_cursor.execute(insertQuery)
+                if (result == 1):
+                    logging.info('Insert to table %s on server %s succeeded', \
+self.coolTable,self.coolHost)
+                    socool_db.commit()
+                else:
+                    logging.error('Insert failed to table %s on server %s!', \
+self.coolTable,self.coolHost)
+        else:
+            #just print it
+             logging.info(line)
+
+def dinkumConvert(gpsLat, gpsLon):
+    """
+    Module:     dinkumConvert
+    Date:       2012-11-27
+    Author:     rdc@mote.org
+    Modified:   2013-04-24
+    By:         rdc@mote.org
+    Inputs:     lat,lon in dinkum format
+    Outputs:    dd.dddd format
+    Purpose:    conversion of lat long formatting
+    """
+
+    if myDebug > 0:
+        print "converting %s %s" % (gpsLon, gpsLat)
+    gpsLon = float(gpsLon)
+    gpsLat = float(gpsLat)
+    latInt = int((gpsLat / 100.0))
+    lonInt = int((gpsLon / 100.0))
+    lat = (latInt + (gpsLat - (latInt * 100)) / 60.0)
+    lon = (lonInt + (gpsLon - (lonInt * 100)) / 60.0)
+    lat = eval("%0.4f" % (lat))
+    lon = eval("%0.4f" % (lon))
+    if myDebug > 0:
+        print "Converted %0.4f %0.4f to %0.4f %0.4f" % (gpsLat, gpsLon, \
+lat, lon)
+    return lat, lon
+
+def main():
+    """
+    Module:     main
+    Date:       2012-11-27
+    Author:     rdc@mote.org
+    Modified:   2013-04-24
+    By:         rdc@mote.org
+    Inputs:     none
+    Outputs:    none
+    Purpose:    Main loop
+    """
+
+    factory = Factory()
+    factory.protocol = breveLogger
+    reactor.listenTCP(breveLogger.listenPort, factory)
+    reactor.run()
+
+main()
+
+

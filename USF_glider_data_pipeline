@@ -1,0 +1,31 @@
+#!/bin/bash
+<<DOCO
+Date:       9 August 2013
+            2015-04-06 changed to usfgliderserver.mote.org
+Author:     rdc@mote.org
+Purpose:    Rsync data files (sbd/logs) from usfgliderserver
+            to /var/www/html/deployments/vehicle
+            Process log and sbd files to build SQLite DB file,
+            CSV output for GCOOS, KMZ file and plots.
+            This is for use DURING a mission. Post-mission
+            processing is performed using different scripts.
+DOCO
+
+ if [ "$#" != 2 ];then
+    echo "Usage: glider_date_pipeline vehicle_name DEBUG_LEVEL"
+else
+    echo "Glider Data Pipeline for $1 initiated at $(date)..."
+    DATA_DIR="/var/www/html/deployments/$1"
+    echo $DATA_DIR
+    echo "Rsyncing sbd files from usfgliderserver for $1..."
+    rsync -av mote@usfgliderserver:/var/opt/gmc/gliders/usf-bass/from-glider/usf-bass-2015*.sbd "$DATA_DIR/binary_files/sbd/"
+    echo "Rsyncing tbd files from usfgliderserver for $1..."
+    rsync -av mote@usfgliderserver:/var/opt/gmc/gliders/usf-bass/from-glider/usf-bass-2015*.tbd "$DATA_DIR/binary_files/tbd/"
+    echo "Rsyncing log files from usfgliderserver for $1..."
+    rsync -av mote@usfgliderserver:/var/opt/gmc/gliders/usf-bass/logs/usf-bass_network_201504*.log "$DATA_DIR/ascii_files/logs/"
+
+    echo "Processing $1 data and log files..."
+    ./mote_tools/make_usf_plots usf-bass /var/www/html/deployments/usf-bass/ 1 1
+    echo "Generating plots for $1..."
+    echo "$1 completed at $(date)..."
+fi

@@ -1,0 +1,13 @@
+#!/bin/bash
+#make_all_plots year glider
+#make_all_plots 2012 waldo
+cd /home/slocum/public_html/deployments/$1/$2
+
+for folder in *;
+do
+    echo "Processing $folder"
+    cd $folder/processed_data
+    /home/slocum/public_html/mote_tools/make_mote_plots.py
+    cd ../../
+done
+

@@ -1,0 +1,13 @@
+#!/bin/bash
+#gzip_all_dba year glider
+#gzip_all_dba 2012 waldo
+cd /home/slocum/public_html/deployments/$1/$2
+
+for folder in *;
+do
+    echo "Compressing dba files in $folder"
+    cd $folder/processed_data
+    gzip *.dba
+    cd ../../
+done
+

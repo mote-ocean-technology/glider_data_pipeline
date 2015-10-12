@@ -1,0 +1,26 @@
+#!/bin/bash
+#We should change file names to vehicle-date-merged.dba,
+#vehicle-glider-date.dba and vehicle-science-date.dba
+#Add vehicle name and date as command line args
+#Ex: ./make_mote_standard mote_045 2013-10-01
+
+if [ ! $# == 2 ]; then
+    echo "Usage: make_mote_merged vehicle_name deployment_date"
+    echo "Example: make_mote_merged mote_045 2013-01-01"
+    exit
+fi
+
+echo "Processing dbd flight controller files..."
+/opt/dinkum/dbd2asc ../binary_files/dbd/*.dbd > $1-$2-glider.dba 
+echo "Processing ebd science controller files..."
+/opt/dinkum/dbd2asc ../binary_files/ebd/*.ebd > $1-$2-science.dba 
+echo "Running dba_sensor_filter on glider.dba..."
+cat $1-$2-glider.dba | /opt/dinkum/dba_sensor_filter -f /data/home/slocum/public_html/config_files/glider_sensor_list.dat > glider_sl.dba
+echo "Running dba_sensor_filter on science.dba..."
+cat $1-$2-science.dba | /opt/dinkum/dba_sensor_filter -f /data/home/slocum/public_html/config_files/sci_sensor_list.dat > science_sl.dba
+echo "Merging glider_sl.dba and science_sl.dba into $1-$2-merged.dba..."
+/opt/dinkum/dba_merge glider_sl.dba science_sl.dba > $1-$2-merged.dba
+echo "Cleaning up..."
+rm science_sl.dba
+rm glider_sl.dba
+echo "Done!"

@@ -1,0 +1,33 @@
+#!/bin/bash
+<<DOCO
+Date:       9 August 2013
+            2013-12-11 changed to cloud-ds1.mote.org
+Author:     rdc@mote.org
+Purpose:    Rsync data files (sbd/logs) from cloud-ds1
+            to /var/www/html/deployments/vehicle
+            Process log and sbd files to build SQLite DB file,
+            CSV output for GCOOS, KMZ file and plots.
+            This is for use DURING a mission. Post-mission
+            processing is performed using different scripts.
+DOCO
+
+ if [ "$#" != 2 ];then
+    echo "Usage: glider_date_pipeline vehicle_name DEBUG_LEVEL"
+else
+    echo "Glider Data Pipeline for $1 initiated at $(date)..."
+    DATA_DIR="/var/www/html/deployments/$1"
+    echo $DATA_DIR
+    echo "Rsyncing sbd files from cloud-ds1 for $1..."
+    rsync -av -e "ssh -i /home/ec2-user/documents/keys/coolcloudweb.pem" ec2-user@cloud-ds1:/var/opt/gmc/gliders/waldo/from-glider/*.sbd "$DATA_DIR/binary_files/sbd/"
+    echo "Rsyncing tbd files from cloud-ds1 for $1..."
+    rsync -av -e "ssh -i /home/ec2-user/documents/keys/coolcloudweb.pem" ec2-user@cloud-ds1:/var/opt/gmc/gliders/waldo/from-glider/*.tbd "$DATA_DIR/binary_files/tbd/"
+    echo "Rsyncing log files from cloud-ds1 for $1..."
+    rsync -av -e "ssh -i /home/ec2-user/documents/keys/coolcloudweb.pem" ec2-user@cloud-ds1:/var/opt/gmc/gliders/waldo/logs/*.log "$DATA_DIR/ascii_files/logs/"
+    echo "Rsyncing sqlite db file from cloud-ds1 for $1..."
+    rsync -av -e "ssh -i /home/ec2-user/documents/keys/coolcloudweb.pem" ec2-user@cloud-ds1:/usr/local/src/python/GliderTracker/waldo_tbd.db "$DATA_DIR/processed_data/"
+
+    echo "Processing $1 data and log files..."
+    ./mote_tools/make_mote_plots_prod mote_045 /var/www/html/deployments/mote_045/ 1 1
+    echo "Generating plots for $1..."
+    echo "$1 completed at $(date)..."
+fi
